@@ -1,11 +1,13 @@
 use std::fs;
 use ndarray::{Array, array, Ix2};
 use text_io::read;
+use std::time::Instant;
 
-use crate::sokoengine::Stringable;
+use crate::sokoengine::{Stringable, SokoInterface};
 
 mod sokoengine;
 mod sokoset;
+mod mcts;
 
 enum Command {
     Quit,
@@ -31,11 +33,7 @@ fn char_to_command(c: Option<&u8>) -> Command {
         }
 }
 
-fn main() {
-    /*
-    let manager: sokoengine::SokoManager<sokoengine::MapTile, sokoengine::Entity>
-        = sokoengine::SokoManager::new(sokoengine::mk_type_to_text);
-    */
+fn game_loop() -> () {
     let submanager: sokoengine::SokoManager<sokoset::MapSet, sokoset::EntitySet> =
         sokoengine::SokoManager::new(sokoset::mk_set_to_text);
     let patterns = sokoset::Patterns::new();
@@ -77,4 +75,29 @@ fn main() {
             break;
         }
     }
+
+}
+
+fn main() {
+    let manager: sokoengine::SokoManager<sokoengine::MapTile, sokoengine::Entity>
+        = sokoengine::SokoManager::new(sokoengine::mk_type_to_text);
+    /*
+    let submanager: sokoengine::SokoManager<sokoset::MapSet, sokoset::EntitySet> =
+        sokoengine::SokoManager::new(sokoset::mk_set_to_text);
+    let patterns = sokoset::Patterns::new();
+    let manager = sokoset::SetManager::new(submanager, patterns);
+    */
+    let contents = fs::read_to_string("./src/sokoban_1_t.lvl").expect("Couldn't read the file!");
+    let s_init = sokoengine::SokoState::from_str(&contents, &manager);
+    let mut s_tree = mcts::SearchTree::new(s_init.clone());
+    println!("Start search!");
+    let now = Instant::now();
+    let win = s_tree.basic_search(Some(sokoengine::SokoState::is_win), None, &manager).expect("Could not win!");
+    let elapsed = now.elapsed();
+    let v_states = s_tree.unroll_search(win, s_init.clone()).expect("Could not find the start!");
+    for v_state in v_states {
+        println!("{}", v_state.to_str(&manager));
+        println!("");
+    }
+    println!("Explored {} states in {} seconds", s_tree.n_states(), elapsed.as_secs());
 }

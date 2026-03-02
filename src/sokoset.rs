@@ -217,10 +217,12 @@ impl SokoSet {
                 changed = changed || b;
                 loc_changed = loc_changed || b;
                 if b {
-                    //TODO: Not all patterns will actually change the player position when they succeed
                     let loc_next = loc + dv;
-                    new_plocs.push(loc_next);
-                    // At most one pattern is applied per step
+                    // Not all patterns will actually change the player position when they succeed
+                    if new_state.get_entity(&loc_next) == ENTITY_PLAYER {
+                        new_plocs.push(loc_next);
+                    }
+                    // At most one pattern can succeed per step
                     break;
                 }
             }
@@ -240,7 +242,8 @@ impl SokoSet {
     }
 }
 
-impl sokoengine::SokoInterface<MapSet, EntitySet, SetManager> for SokoSet {
+impl sokoengine::SokoInterface<MapSet, EntitySet> for SokoSet {
+    type V = SetManager;
 
     fn update(&self, d: sokoengine::Direction, mgr: &SetManager) -> Option<Self> {
         // Create slices for each applicable pattern

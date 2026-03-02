@@ -8,6 +8,8 @@ extern crate nalgebra as na;
 use na::Vector2;
 use std::collections::VecDeque;
 use std::marker::PhantomData;
+use strum::IntoEnumIterator;
+use strum_macros::EnumIter;
 
 const MAX_MEMORY: usize = 100;
 
@@ -47,7 +49,7 @@ impl Default for Entity {
     }
 }
 
-#[derive(Debug, Copy, Clone, Eq, Hash, PartialEq)]
+#[derive(Debug, Copy, Clone, Eq, Hash, PartialEq, EnumIter)]
 pub enum Direction {
     Up,
     Left,
@@ -63,6 +65,7 @@ pub trait Coder<M, E> {
 
 // Trait for a type that can use a manager to read and write state to string
 // This trait is here because the reading / writing code can be generic
+// Stringable depends on C because different implementations of C can provide different resulting strings, even for the same M, E types.
 pub trait Stringable<M, E, C> {
     fn from_str(s: &String, mgr: &C) -> Self;
     fn to_str(&self, mgr: &C) -> String;
@@ -203,11 +206,12 @@ pub fn index_checked<T>(a: &Array<T, Ix2>, c: &Vector2<isize>) -> Option<T>
 }
 
 // All of the things expected of a Sokoban implementation
-//TODO: it's kind of silly for this to depend on V, but idk
-//TODO: use the type syntax from (for example) IntoIterator to define V inside the trait!
-pub trait SokoInterface<M, E, V> {
-   fn update(&self, _: Direction, mgr: &V) -> Option<Self> where Self: Sized;
-   fn is_win(&self) -> bool;
+// Use the type syntax from (for example) IntoIterator to define V inside the trait!
+// Any SokoInterface implementation needs to specify the Manager type
+pub trait SokoInterface<M, E> {
+    type V: HasVecs;
+    fn update(&self, _: Direction, mgr: &Self::V) -> Option<Self> where Self: Sized;
+    fn is_win(&self) -> bool;
 }
 
 impl<M: Default + Clone, E: Default + Clone> SokoState<M, E> {
@@ -277,9 +281,10 @@ impl<M: Eq + Hash + Copy + Default, E: Eq + Hash + Copy + IsPlayer + Default, C:
 
 }
 
-impl<V: HasVecs> SokoInterface<MapTile, Entity, V> for SokoState<MapTile, Entity> {
+impl SokoInterface<MapTile, Entity> for SokoState<MapTile, Entity> {
+    type V = SokoManager<MapTile, Entity>;
 
-    fn update(&self, d: Direction, mgr: &V) -> Option<SokoState<MapTile, Entity>> {
+    fn update(&self, d: Direction, mgr: &Self::V) -> Option<SokoState<MapTile, Entity>> {
         //println!("{:?}", self.player_locs);
         let ordering = choose_ordering(d);
         let mut locs = self.player_locs.to_vec();
@@ -344,22 +349,23 @@ impl<V: HasVecs> SokoInterface<MapTile, Entity, V> for SokoState<MapTile, Entity
     }
 }
 
-pub struct SokoMemory<M, E, V> {
+pub struct SokoMemory<M, E, C> {
     current_state: SokoState<M, E>,
     past_states: VecDeque<SokoState<M, E>>,
-    phantom: PhantomData<V>, // Sokomemory doesn't HAVE a manager, but it depends on the type of manager being used
+    phantom: PhantomData<C>, // Sokomemory doesn't HAVE a manager, but it depends on the type of manager being used
 }
 
-impl<M: Eq + Hash + Copy + Default, E: Eq + Hash + Copy + IsPlayer + Default, V> Stringable<M, E, V> for SokoMemory<M, E, V> where
-    SokoState<M, E>: Stringable<M, E, V>,
+impl<M: Eq + Hash + Copy + Default, E: Eq + Hash + Copy + IsPlayer + Default, C: Coder<M, E>> Stringable<M, E, C> for SokoMemory<M, E, C> where
+    SokoState<M, E>: Stringable<M, E, C>,
 {
-    fn to_str(&self, mgr: &V) -> String {
+
+    fn to_str(&self, mgr: &C) -> String {
         self.current_state.to_str(mgr)
     }
 
-    fn from_str(s: &String, mgr: &V) -> SokoMemory<M, E, V> {
+    fn from_str(s: &String, mgr: &C) -> SokoMemory<M, E, C> {
         let s = SokoState::<M, E>::from_str(s, mgr);
-        return SokoMemory { current_state: s, past_states: VecDeque::new(), phantom: PhantomData };
+        return SokoMemory { current_state: s, past_states: VecDeque::new(), phantom: PhantomData};
     }
 
 }
@@ -369,12 +375,13 @@ impl<M: Eq + Hash + Copy + Default, E: Eq + Hash + Copy + IsPlayer + Default, V>
 // Either transition SokoMemory.update to use &self (and change past_states to VecDeque<&T>), or require &mut self
 // The first is probably better, but would require a lifetime annotation for SokoMemory
 //impl<M: SokoInterface<> + Clone + Stringable<A>> SokoMemory<A, T> {
-impl<M: Clone, E: Clone, V: HasVecs> SokoMemory<M, E, V> where 
-    SokoState<M, E>: SokoInterface<M, E, V>,
-    SokoState<M, E>: Stringable<M, E, V>,
+impl<M: Clone, E: Clone, C: Coder<M, E>> SokoMemory<M, E, C> where 
+    //C: <SokoState<M, E> as SokoInterface<M, E>>::V,
+    SokoState<M, E>: SokoInterface<M, E>,
+    SokoState<M, E>: Stringable<M, E, C>,
 {
 
-    pub fn update(&mut self, d: Direction, mgr: &V) -> () {
+    pub fn update(&mut self, d: Direction, mgr: &<SokoState<M, E> as SokoInterface<M, E>>::V) -> () {
         let s_opt = self.current_state.update(d, mgr);
         match s_opt {
             // Only update the queue and the current state if the move succeeds
