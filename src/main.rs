@@ -4,10 +4,12 @@ use text_io::read;
 use std::time::Instant;
 
 use crate::sokoengine::{Stringable, SokoInterface};
+use crate::heuristics::{find_wall_traps};
 
 mod sokoengine;
 mod sokoset;
 mod mcts;
+mod heuristics;
 
 enum Command {
     Quit,
@@ -38,8 +40,8 @@ fn game_loop() -> () {
         sokoengine::SokoManager::new(sokoset::mk_set_to_text);
     let patterns = sokoset::Patterns::new();
     let manager = sokoset::SetManager::new(submanager, patterns);
-    let contents = fs::read_to_string("./src/sokoban_1_t.lvl").expect("Couldn't read the file!");
-    //let contents = fs::read_to_string("./src/sokoban_multiple_players.lvl").expect("Couldn't read the file!");
+    //let contents = fs::read_to_string("./src/sokoban_1_t.lvl").expect("Couldn't read the file!");
+    let contents = fs::read_to_string("./src/sokoban_multiple_players.lvl").expect("Couldn't read the file!");
     // Create the memory object that holds all the states
     /*
     let mut s_mem: sokoengine::SokoMemory<sokoengine::MapTile, sokoengine::Entity, sokoengine::SokoManager<sokoengine::MapTile, sokoengine::Entity>>
@@ -78,6 +80,7 @@ fn game_loop() -> () {
 
 }
 
+
 fn main() {
     let manager: sokoengine::SokoManager<sokoengine::MapTile, sokoengine::Entity>
         = sokoengine::SokoManager::new(sokoengine::mk_type_to_text);
@@ -89,6 +92,12 @@ fn main() {
     */
     let contents = fs::read_to_string("./src/sokoban_1_t.lvl").expect("Couldn't read the file!");
     let s_init = sokoengine::SokoState::from_str(&contents, &manager);
+    let helper = heuristics::HeuristicHelper::new(&s_init, &manager);
+    let now = Instant::now();
+    let h = heuristics::matching_heuristic(&s_init, &helper);
+    println!("{:?}", now.elapsed());
+    println!("{:?}", h);
+    /*
     let mut s_tree = mcts::SearchTree::new(s_init.clone());
     println!("Start search!");
     let now = Instant::now();
@@ -100,4 +109,11 @@ fn main() {
         println!("");
     }
     println!("Explored {} states in {} seconds", s_tree.n_states(), elapsed.as_secs());
+    */
 }
+
+/*
+fn main() {
+    game_loop()
+}
+*/

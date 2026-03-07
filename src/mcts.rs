@@ -6,6 +6,7 @@ use std::hash::Hash;
 use ordered_float::OrderedFloat;
 use strum::IntoEnumIterator;
 use std::collections::VecDeque;
+use std::time::Instant;
 
 use crate::sokoengine::{SokoManager, SokoState, HasVecs, MapTile, Entity, Direction, SokoInterface, Stringable};
 
@@ -19,6 +20,12 @@ impl Searchable for SokoState<MapTile, Entity> {
 
     fn neighbors(&self, mgr: &SokoManager<MapTile, Entity>) -> Vec<SokoState<MapTile, Entity>> {
         let mut v = Vec::new();
+        /*
+        // Winning state has no neighbors
+        if self.is_win() {
+            return v;
+        }
+        */
         for d in Direction::iter() {
             match self.update(d, mgr) {
                 Some(s) => { v.push(s) },
@@ -83,14 +90,27 @@ impl<T: Clone + Eq + PartialEq + Hash + Searchable> SearchTree<T> where
         return self.visited.len();
     }
 
+    pub fn rollout(&mut self, start_state: T, rollout_length: Option<usize>) -> Option<T> {
+        return None //TODO
+    }
+
+    pub fn mcts(&mut self, until: Option<fn(&T) -> bool>,
+        rollout_length: Option<usize>, eval: Option<fn(&T) -> OrderedFloat<f64>>,
+        max_states: Option<usize>, mgr: &<T as Searchable>::V) -> Option<T> {
+        return None //TODO
+    }
+
     // BFS
     //TODO: Stop all the cloning!
     // Instead, have visited hold the master list of discovered states,
     // and make everything else use references
+    // Implement Hash and Eq for &SokoState via dereferencing
     // Does not use the standard self.state_queue, which is a priority minqueue
     pub fn basic_search(&mut self, until: Option<fn(&T) -> bool>, max_states: Option<usize>, mgr: &<T as Searchable>::V) -> Option<T> {
         let mut queue = VecDeque::new();
         queue.push_back(self.initial_state.clone());
+        let mut time = Instant::now();
+        let mut current_n: usize = 1;
         // Continue until the queue is empty
         while let Some(parent) = queue.pop_front() {
             //println!("{} states remain", queue.len());
@@ -104,6 +124,16 @@ impl<T: Clone + Eq + PartialEq + Hash + Searchable> SearchTree<T> where
                     self.state_tree.insert(neighbor.clone(), parent.clone());
                     //let n0 = SearchState { p: OrderedFloat(self.t as f64), state_id: self.t, t: neighbor.clone() };
                     self.t = self.t + 1;
+                    if (self.n_states() % 10000) == 0 {
+                        let ms = time.elapsed().as_millis();
+                        let n_processed = self.n_states() - current_n;
+                        let per = (n_processed as f64 / ms as f64) * 1000.0;
+                        println!("{} states per second", per);
+                        //println!("{}", ms);
+                        println!("{} states total", self.n_states());
+                        current_n = self.n_states();
+                        time = Instant::now();
+                    }
                     // Quit early if we've explored too many states
                     match max_states {
                         Some(m) => if self.t > m {
