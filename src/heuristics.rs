@@ -132,7 +132,6 @@ fn in_trap(p: &Vector2<isize>, trap: &Trap) -> bool {
             return p.y == trap.fixed_c && p.x >= trap.start && p.y <= trap.end;
         }
     }
-    return false //TODO
 }
 
 // Struct to hold all the important heuristic info that only has to be computed once
@@ -256,3 +255,12 @@ pub fn matching_heuristic(s: &SokoState<MapTile, Entity>, helper: &HeuristicHelp
     //return OrderedFloat(0.0); //TODO
 }
 
+
+pub fn matching_heuristic_inv(s: &SokoState<MapTile, Entity>, helper: &HeuristicHelper) -> OrderedFloat<f64> {
+    // For matching_heuristic, smaller is better
+    // For this heuristic, bigger is better
+    // Use 1 / x + 0.01 so that if matching_heuristic == 0 (for example, if the game is won), the value isn't infty
+    // This means max value is 100.0
+    // This is arbitrary
+    return OrderedFloat(1.0) / (matching_heuristic(s, helper) + 0.01);
+}

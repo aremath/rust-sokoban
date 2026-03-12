@@ -92,13 +92,19 @@ fn main() {
     */
     let contents = fs::read_to_string("./src/sokoban_1_t.lvl").expect("Couldn't read the file!");
     let s_init = sokoengine::SokoState::from_str(&contents, &manager);
+    /*
+    // Heuristic testing!
     let helper = heuristics::HeuristicHelper::new(&s_init, &manager);
     let now = Instant::now();
     let h = heuristics::matching_heuristic(&s_init, &helper);
     println!("{:?}", now.elapsed());
     println!("{:?}", h);
-    /*
+    */
     let mut s_tree = mcts::SearchTree::new(s_init.clone());
+    let rolled_out = s_tree.rollout(&s_init, Some(100), &manager);
+    println!("{}", rolled_out.to_str(&manager));
+    /*
+    // BFS testing!
     println!("Start search!");
     let now = Instant::now();
     let win = s_tree.basic_search(Some(sokoengine::SokoState::is_win), None, &manager).expect("Could not win!");
