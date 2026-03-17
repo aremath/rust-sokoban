@@ -1,3 +1,6 @@
+// Heuristics for Sokoban
+// Includes basic lock detection / dead box detection
+// Includes minimum matching heuristic for box distance from available targets
 use pathfinding::matrix::Matrix;
 use pathfinding::kuhn_munkres::kuhn_munkres_min;
 use ordered_float::OrderedFloat;
@@ -230,9 +233,9 @@ pub fn find_box_adj(s: &SokoState<MapTile, Entity>, helper: &HeuristicHelper) ->
             _ => { panic!("Block somehow in more than 2 traps!"); }
         }
     }
-    println!("{:?}", block_locs);
-    println!("{:?}", helper.target_locs);
-    println!("{:?}", distance_matrix);
+    //println!("{:?}", block_locs);
+    //println!("{:?}", helper.target_locs);
+    //println!("{:?}", distance_matrix);
     assert!(sum < BIG_NUMBER, "Distances are too large!");
     return distance_matrix;
 }
@@ -257,10 +260,14 @@ pub fn matching_heuristic(s: &SokoState<MapTile, Entity>, helper: &HeuristicHelp
 
 
 pub fn matching_heuristic_inv(s: &SokoState<MapTile, Entity>, helper: &HeuristicHelper) -> OrderedFloat<f64> {
+    let mut victory = OrderedFloat(0.0);
+    if s.is_win() {
+        victory = OrderedFloat(100.0);
+    }
     // For matching_heuristic, smaller is better
     // For this heuristic, bigger is better
     // Use 1 / x + 0.01 so that if matching_heuristic == 0 (for example, if the game is won), the value isn't infty
     // This means max value is 100.0
     // This is arbitrary
-    return OrderedFloat(1.0) / (matching_heuristic(s, helper) + 0.01);
+    return (OrderedFloat(1.0) / (matching_heuristic(s, helper) + 0.01)) + victory;
 }

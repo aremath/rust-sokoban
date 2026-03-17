@@ -1,3 +1,6 @@
+// Extends the basic sokoban engine from sokoengine.rs to include a set representation of sokoban levels
+// Includes rules for interacting with the set representation, and bitsets for representing sets of designs
+// Compatible with the same string representation as sokoengine.rs
 extern crate nalgebra as na;
 use na::Vector2;
 use bimap::BiMap;

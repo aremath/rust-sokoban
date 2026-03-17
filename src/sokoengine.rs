@@ -1,3 +1,6 @@
+// Basic Sokoban Engine
+// Includes string input / output for sokoban levels, movement model for sokoban, etc.
+// Also includes a memory type for implementing undo operations
 use std::fmt;
 use std::isize::MAX;
 use ndarray::{Array, Axis, Ix2};

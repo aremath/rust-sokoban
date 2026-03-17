@@ -2,6 +2,8 @@ use std::fs;
 use ndarray::{Array, array, Ix2};
 use text_io::read;
 use std::time::Instant;
+use rand::prelude::*;
+use rand::rngs::SmallRng;
 
 use crate::sokoengine::{Stringable, SokoInterface};
 use crate::heuristics::{find_wall_traps};
@@ -10,6 +12,8 @@ mod sokoengine;
 mod sokoset;
 mod mcts;
 mod heuristics;
+
+const SEED_VALUE: u64 = 0;
 
 enum Command {
     Quit,
@@ -90,7 +94,8 @@ fn main() {
     let patterns = sokoset::Patterns::new();
     let manager = sokoset::SetManager::new(submanager, patterns);
     */
-    let contents = fs::read_to_string("./src/sokoban_1_t.lvl").expect("Couldn't read the file!");
+    //let contents = fs::read_to_string("./src/sokoban_1_t.lvl").expect("Couldn't read the file!");
+    let contents = fs::read_to_string("./src/sokoban_simple.lvl").expect("Couldn't read the file!");
     let s_init = sokoengine::SokoState::from_str(&contents, &manager);
     /*
     // Heuristic testing!
@@ -100,9 +105,20 @@ fn main() {
     println!("{:?}", now.elapsed());
     println!("{:?}", h);
     */
+    let helper = heuristics::HeuristicHelper::new(&s_init, &manager);
+    let mut rng = SmallRng::seed_from_u64(SEED_VALUE);
     let mut s_tree = mcts::SearchTree::new(s_init.clone());
-    let rolled_out = s_tree.rollout(&s_init, Some(100), &manager);
-    println!("{}", rolled_out.to_str(&manager));
+    let win = s_tree.mcts(Some(50),
+        |s| { heuristics::matching_heuristic_inv(s, &helper) },
+        Some(1000),
+        &manager,
+        &mut rng);
+    //let rolled_out = s_tree.rollout(&s_init, Some(100), &mut rng, &manager);
+    //println!("{}", rolled_out.to_str(&manager));
+    match win {
+        Some(w) => { println!("{}", w.to_str(&manager)) },
+        None => {}
+    }
     /*
     // BFS testing!
     println!("Start search!");

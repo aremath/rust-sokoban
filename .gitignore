@@ -16,4 +16,7 @@ target
 # VIM stuff
 *.swp
 
+# Festival stuff (festival binary and output files)
 src/festival_3.1C
+solutions.sok
+times.txt
