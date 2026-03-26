@@ -15,10 +15,15 @@ use rand::rngs::SmallRng;
 use std::cell::Cell;
 use std::f64::consts::E;
 
-use crate::sokoengine::{SokoManager, SokoState, HasVecs, MapTile, Entity, Direction, SokoInterface, Stringable};
+use crate::sokoengine::{SokoManager, SokoState, HasVecs, MapTile, Entity, Direction, SokoInterface, Stringable, Coder};
 
 //const SEED_VALUE: u64 = 0;
-const EXPLORATION_BONUS: OrderedFloat<f64> = OrderedFloat(5.0); //TODO: how to determine this?
+//const EXPLORATION_BONUS: OrderedFloat<f64> = OrderedFloat(5.0); //TODO: how to determine this?
+//const EXPLORATION_BONUS: OrderedFloat<f64> = OrderedFloat(0.5);
+//const EXPLORATION_BONUS: OrderedFloat<f64> = OrderedFloat(0.1);
+const EXPLORATION_BONUS: OrderedFloat<f64> = OrderedFloat(0.05);
+const MAXIMIZATION_BIAS: OrderedFloat<f64> = OrderedFloat(0.5);
+const EPSILON: OrderedFloat<f64> = OrderedFloat(0.5);
 //const OE: OrderedFloat<f64> = OrderedFloat(E);
 
 pub trait Searchable {
@@ -58,6 +63,39 @@ impl Searchable for SokoState<MapTile, Entity> {
     }
 }
 
+// "time" tags enforce DAGness of the state graph
+pub type TaggedSokoState = (SokoState<MapTile, Entity>, usize);
+
+impl Searchable for TaggedSokoState {
+    type V = SokoManager<MapTile, Entity>;
+
+    fn neighbors(&self, mgr: &SokoManager<MapTile, Entity>) -> Vec<TaggedSokoState> {
+        let mut v = Vec::new();
+        for n in self.0.neighbors(mgr) {
+            v.push((n, self.1 + 1));
+        }
+        return v
+    }
+
+    fn terminal(&self) -> bool {
+        return SokoInterface::is_win(&self.0);
+    }
+
+    fn is_win(&self) -> bool {
+        return SokoInterface::is_win(&self.0);
+    }
+}
+
+impl<C: Coder<MapTile, Entity>> Stringable<MapTile, Entity, C> for TaggedSokoState {
+    fn from_str(s: &String, mgr: &C) -> Self {
+        return (SokoState::<MapTile, Entity>::from_str(s, mgr), 0);
+    }
+
+    fn to_str(&self, mgr: &C) -> String {
+        return self.0.to_str(mgr);
+    }
+}
+
 #[derive(Clone, Eq, PartialEq)]
 struct SearchState<T: Clone + Eq + PartialEq> {
     p: OrderedFloat<f64>,
@@ -69,13 +107,14 @@ struct SearchState<T: Clone + Eq + PartialEq> {
 struct StateData {
     // Combination of child values
     value_estimate: OrderedFloat<f64>, // "n_wins" in traditional MCTS
+    max_value: OrderedFloat<f64>, // The maximum value we've seen from a child of this node
     n_samples: usize,
 }
 
 impl StateData {
 
     pub fn new() -> Self {
-        return StateData { value_estimate: OrderedFloat(0.0), n_samples: 0 };
+        return StateData { value_estimate: OrderedFloat(0.0), max_value: OrderedFloat(0.0), n_samples: 0 };
     }
 
 }
@@ -110,6 +149,7 @@ impl<T: Clone + Eq + PartialEq + Hash + Searchable> SearchTree<T> where
 
     pub fn new(initial_state: T) -> Self {
         let h = HashMap::new();
+        let parents = HashMap::new();
         let mut v = HashSet::new();
         let mut p = BinaryHeap::new();
         let d = HashMap::new();
@@ -122,12 +162,24 @@ impl<T: Clone + Eq + PartialEq + Hash + Searchable> SearchTree<T> where
             t: 1,
             //rng : rng,
             visited : Box::new(v),
+            parents: Box::new(parents),
             single_parents: Box::new(h),
             children: Box::new(c),
             state_data: Box::new(d),
             state_queue : Box::new(p) };
     }
 
+
+    pub fn exploration_score(data: &StateData) -> OrderedFloat<f64> {
+        return EXPLORATION_BONUS / (OrderedFloat(data.n_samples as f64) + 1.0);
+
+    }
+
+    pub fn exploitation_score(data: &StateData) -> OrderedFloat<f64> {
+        //return data.value_estimate / (OrderedFloat(data.n_samples as f64) + 0.1);
+        return (data.value_estimate / (OrderedFloat(data.n_samples as f64) + 0.1) * (OrderedFloat(1.0) - MAXIMIZATION_BIAS)) + (data.max_value * MAXIMIZATION_BIAS);
+
+    }
     //TODO: (how much) maximization bias is good?
     // e.g. have a max score then the value is some mixture of the average and the max
     //TODO: what about the heuristic score for the state itself?
@@ -138,10 +190,7 @@ impl<T: Clone + Eq + PartialEq + Hash + Searchable> SearchTree<T> where
     // (but having to re-update every time a child pushes data might make it less efficient?)
     pub fn evaluate_state(&self, state: &T) -> OrderedFloat<f64> {
         let data = self.state_data.get(state).expect("State not found!");
-        let exploitation = data.value_estimate / (OrderedFloat(data.n_samples as f64) + 0.1);
-        //TODO: theoretically this should be based on the sample ratio to the parent
-        let exploration = EXPLORATION_BONUS / (OrderedFloat(data.n_samples as f64) + 1.0);
-        return exploitation + exploration;
+        return SearchTree::<T>::exploration_score(data) + SearchTree::<T>::exploitation_score(data);
     }
 
     pub fn n_states(&self) -> usize {
@@ -181,16 +230,22 @@ impl<T: Clone + Eq + PartialEq + Hash + Searchable> SearchTree<T> where
     }
 
     // Depth-first upwards traversal to propagate value to all ancestors
-    fn propagate_upwards(&mut self, state: &T, visited: &HashSet<T>, h: OrderedFloat<f64>) -> () {
-        visited.add(state);
-        let mut data = self.state_data.get_mut(state).expect("State not found!");
+    // Static method because state_data is borrowed mutably but parents is borrowed immutably
+    fn propagate_upwards(state_data: &mut HashMap<T, StateData>,
+            parents: &HashMap<T, Vec<T>>,
+            state: &T, visited: &mut HashSet<T>, h: OrderedFloat<f64>) -> () {
+        visited.insert(state.clone());
+        let mut data = state_data.get_mut(state).expect("State not found!");
         data.value_estimate += h;
+        if h > data.max_value {
+            data.max_value = h;
+        }
         data.n_samples += 1;
-        match self.parents.get(state) {
+        match parents.get(state) {
             Some(parent_v) => {
                 for parent in parent_v {
                     if !visited.contains(parent) {
-                        self.propagate_upwards(parent);
+                        SearchTree::propagate_upwards(state_data, parents, parent, visited, h);
                     }
                 }
             },
@@ -204,22 +259,15 @@ impl<T: Clone + Eq + PartialEq + Hash + Searchable> SearchTree<T> where
     pub fn rollout_backprop(&mut self, start_state: &T, rollout_length: Option<usize>,
         mgr: &<T as Searchable>::V, rng: &mut SmallRng, heuristic: impl Fn(&T) -> OrderedFloat<f64> ) -> () {
         // Do the rollout
-        println!("\tDo the rollout!");
+        //println!("\tDo the rollout!");
         let rolled_out = self.rollout(start_state, rollout_length, rng, mgr);
+        println!("Rolled out to\n{}", rolled_out.to_str(mgr));
         let h = heuristic(&rolled_out);
-        println!("\tPropagate the heuristic!");
+        println!("\tPropagating {}", h);
+        //println!("\tPropagate the heuristic!");
         // Propagate the heuristic value back up the tree
-        let mut current_state = start_state;
-        loop {
-            let mut data = self.state_data.get_mut(current_state).expect("State not found!");
-            data.value_estimate += h;
-            data.n_samples += 1;
-            match self.parents.get(current_state) {
-                Some(p) => { current_state = p; },
-                // If we get here, we're at the root
-                None => { break; }
-            }
-        }
+        let mut visited = HashSet::new();
+        SearchTree::propagate_upwards(&mut self.state_data, &self.parents, start_state, &mut visited, h);
     }
 
     // Other tree selection algs are possible of course
@@ -235,11 +283,24 @@ impl<T: Clone + Eq + PartialEq + Hash + Searchable> SearchTree<T> where
                 }
                 // Compute the softmax weights
                 let scores = (&children).into_iter().map(|c| self.evaluate_state(c));
-                let e_scores = scores.map(|s| E.pow(f64::from(s)));
+                // First, convert to proportions
+                // We convert to proportions first because the value estimates are usually quite small
+                // Softmax does not really work well with small values because the derivative of e^x at 0 is 1
+                // So softmax(x,y,z) ~ (x, y, z) for x,y,z ~ 0.
+                let p_sum: OrderedFloat<f64> = scores.clone().sum();
+                let p_prob = scores.map(|s| (f64::from(s) * 10.0) / f64::from(p_sum));
+                // Then, softmax the proportions
+                let e_scores = p_prob.map(|s| E.pow(f64::from(s)));
                 let e_sum: f64 = e_scores.clone().sum();
                 let e_prob = e_scores.map(|s| s / e_sum);
                 // Zip them for convenient closure
                 let cc: Vec<(&T, f64)> = children.into_iter().zip(e_prob).collect();
+                for c in &cc {
+                    let data = self.state_data.get(c.0).expect("State not found!");
+                    let expl_a = SearchTree::<T>::exploration_score(data);
+                    let expl_b = SearchTree::<T>::exploitation_score(data);
+                    println!("{} | {} = {} + {}", c.1, expl_a + expl_b, expl_a, expl_b);
+                }
                 return Some(cc.choose_weighted(rng, |item| item.1).unwrap().0);
             }
             // None if we're at an undiscovered node
@@ -249,7 +310,30 @@ impl<T: Clone + Eq + PartialEq + Hash + Searchable> SearchTree<T> where
         }
     }
 
-    pub fn tree_select_epsilon_greedy(&mut self, current_state: &T) -> Option<&T> {
+    //TODO: "per node" epsilon greedy, with epsilon set based on the empirical likelihood of finding value by following the greedy strategy
+    pub fn tree_select_epsilon_greedy<'a>(&'a self, rng: &mut SmallRng, current_state: &'a T) -> Option<&'a T> {
+        let children_q = self.children.get(current_state);
+        match children_q {
+            Some(children) => {
+                // None if we're at a previously-discovered dead-end
+                if children.len() == 0 {
+                    return None;
+                }
+                // Greedy option
+                if (OrderedFloat(rng.random::<f64>()) < EPSILON) {
+                    let scores = (&children).into_iter().map(|c| self.evaluate_state(c));
+                    let cc: Vec<(&T, OrderedFloat<f64>)> = children.into_iter().zip(scores).collect();
+                    return Some(cc.iter().max_by_key(|c| c.1).unwrap().0);
+                }
+                // Otherwise, choose randomly
+                return Some(children.choose(rng).unwrap());
+            }
+            // None if we're at an undiscovered node
+            None => {
+                return None;
+            }
+        }
+
         return None // TODO
     }
 
@@ -264,13 +348,25 @@ impl<T: Clone + Eq + PartialEq + Hash + Searchable> SearchTree<T> where
         loop {
             println!("Layer: {}", layer);
             layer += 1;
-            let child = self.tree_select_softmax(rng, &state);
+            //let child = self.tree_select_softmax(rng, &state);
+            let child = self.tree_select_epsilon_greedy(rng, &state);
             match child {
                 Some(c) => { state = c; },
                 None => { return state; }
             }
         }
     }
+
+    /*
+    //TODO
+    // Descend the tree, until we reach a leaf, keeping track of where we have been to avoid cycles
+    // Returns an Option because it is possible to go in a spiral pattern
+    // and reach a node whose neighbors are all cycles, but the node is not a leaf
+    pub fn tree_select_leaf_nondag(&self, rng: &mut SmallRng) -> Option(&T) {
+        let mut visited = HashSet::new();
+
+    }
+    */
 
     fn is_leaf(&self, state: &T) -> bool {
         match self.children.get(state) {
@@ -288,41 +384,46 @@ impl<T: Clone + Eq + PartialEq + Hash + Searchable> SearchTree<T> where
         let mut n_iters = 0;
         // Give the starting state a default value
         self.state_data.insert(self.initial_state.clone(), StateData::new());
-        println!("{}", self.parents.get(&self.initial_state).is_none());
+        //println!("{}", self.parents.get(&self.initial_state).is_none());
         loop {
             println!("Iteration {} Start!", n_iters);
             n_iters += 1;
             if self.t > max_states? {
                 return None;
             }
-            println!("Step 1: select leaf");
+            //println!("Step 1: select leaf");
             // Step 1, Tree selection policy to traverse from root to leaf
             let leaf = self.tree_select_leaf(rng).clone();
+            println!("Selected:\n{}", leaf.to_str(mgr));
             // Step 1.5, Check if the leaf node is a victory (or the new leaf node)
             if leaf.is_win() {
                 // The unroll function can reproduce the path
                 return Some(leaf.clone());
             }
-            println!("Step 1.8: Add children");
-            // Add all of its children to the tree with empty node data, and track their parent
-            //  As is, a node with multiple parents will be overwritten?
+            //println!("Step 1.8: Add children");
+            // Add all of its children to the tree with empty node data, and track their parents
             self.children.insert(leaf.clone(), Vec::new());
             for neighbor in leaf.neighbors(mgr) {
                 //TODO: self.t doesn't accurately count states present in self.children
                 //TODO: self.children must be a DAG or select_leaf may not terminate
                 self.children.get_mut(&leaf).expect("Leaf not found!").push(neighbor.clone());
+                // Add the leaf to the neighbor's parents
+                if !self.parents.contains_key(&neighbor) {
+                    self.parents.insert(neighbor.clone(), Vec::new());
+                }
+                self.parents.get_mut(&neighbor).expect("Neighbor not found!").push(leaf.clone());
                 // Every node has a unique parent, so only update parents for newly discovered nodes
                 if !((self.visited).contains(&neighbor)) {
                     self.visited.insert(neighbor.clone());
-                    self.parents.insert(neighbor.clone(), leaf.clone());
+                    self.single_parents.insert(neighbor.clone(), leaf.clone());
                     self.t += 1;
-                    println!("{}", self.t);
-                    println!("{}", neighbor == leaf);
+                    //println!("{}", self.t);
+                    //println!("{}", neighbor == leaf);
                     self.state_data.insert(neighbor.clone(), StateData::new());
                 }
             }
-            println!("Step 3: Roll out");
-            println!("Root still no parents: {}", self.parents.get(&self.initial_state).is_none());
+            //println!("Step 3: Roll out");
+            //println!("Root still no parents: {}", self.parents.get(&self.initial_state).is_none());
             // Step 2, Roll out from the leaf
             //TODO: should this roll out from one of the children?
             // Step 3, propagate the rollout score up the tree
@@ -332,7 +433,48 @@ impl<T: Clone + Eq + PartialEq + Hash + Searchable> SearchTree<T> where
 
     // Returns a reference to the best state found so far
     pub fn best_so_far(&self) -> Option<&T> {
-        return None //TODO
+        let mut best_state = None;
+        let mut max_h = OrderedFloat(0.0);
+        for state in self.visited.iter() {
+            let d = self.state_data.get(state);
+            match d {
+                Some(data) => {
+                    if data.n_samples > 0 {
+                        //println!("{}", f64::from(data.value_estimate));
+                        let exploitation = SearchTree::<T>::exploitation_score(data);
+                        if exploitation > max_h {
+                            max_h = exploitation;
+                            best_state = Some(state);
+                        }
+                    }
+                },
+                None => {}
+            }
+        }
+        match best_state {
+            Some(s) => { println!("{}",
+                f64::from(max_h)) },
+            None => {}
+        }
+        return best_state;
+    }
+
+    pub fn best_heuristic_so_far(&self, heuristic: impl Fn(&T) -> OrderedFloat<f64>) -> Option<&T> {
+        let mut best_state = None;
+        let mut max_h = OrderedFloat(0.0);
+        for state in self.visited.iter() {
+            let h = heuristic(state);
+            if h > max_h {
+                max_h = h;
+                best_state = Some(state);
+            }
+        }
+        match best_state {
+            Some(s) => { println!("{}",
+                f64::from(max_h)) },
+            None => {}
+        }
+        return best_state;
     }
 
     // BFS

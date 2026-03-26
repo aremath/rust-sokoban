@@ -353,7 +353,7 @@ impl SokoInterface<MapTile, Entity> for SokoState<MapTile, Entity> {
 }
 
 pub struct SokoMemory<M, E, C> {
-    current_state: SokoState<M, E>,
+    pub current_state: SokoState<M, E>,
     past_states: VecDeque<SokoState<M, E>>,
     phantom: PhantomData<C>, // Sokomemory doesn't HAVE a manager, but it depends on the type of manager being used
 }

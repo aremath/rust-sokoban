@@ -76,6 +76,33 @@ pub struct Trap {
 
 impl Eq for Trap {}
 
+//TODO: also include Corners!
+
+// A corner is a structure of the form:
+// WB
+// ?W
+// A box at B cannot be moved
+// And therefore can only match with a target that it is already on top of
+pub fn find_corners<T: HasVecs>(s: &SokoState<MapTile, Entity>, mgr: &T) -> Vec<Vector2<isize>> {
+    let mut corners = Vec::new();
+    for ((y, x), _) in s.map_layer.indexed_iter() {
+        let iv = Vector2::new(y as isize, x as isize);
+        // Corners start on a non-wall tile
+        if s.get_tile(&iv) != MapTile::Wall {
+            for d in Direction::iter() {
+                let dv = mgr.d_to_v(d);
+                let dv_p = rotate_90(dv);
+                if s.get_tile(&(iv + dv)) == MapTile::Wall && s.get_tile(&(iv + dv_p)) == MapTile::Wall {
+                    if !corners.contains(&iv) {
+                        corners.push(iv);
+                    }
+                }
+            }
+        }
+    }
+    return corners;
+}
+
 // Computes the "adjacency" of boxes: which boxes can cover which targets
 // Used to evaluate a SokoState
 // Actually computing the answer to this is difficult, so I use a very simple method:
@@ -132,7 +159,7 @@ fn in_trap(p: &Vector2<isize>, trap: &Trap) -> bool {
         }
         // Horizontal coordinate (.y) has to match
         Direction::Up | Direction::Down => {
-            return p.y == trap.fixed_c && p.x >= trap.start && p.y <= trap.end;
+            return p.y == trap.fixed_c && p.x >= trap.start && p.x <= trap.end;
         }
     }
 }
@@ -142,6 +169,8 @@ pub struct HeuristicHelper {
     target_locs: Vec<Vector2<isize>>,
     wall_traps: Vec<Trap>,
     trap_to_targets: HashMap<Trap, Vec<Vector2<isize>>>,
+    corners: Vec<Vector2<isize>>,
+    //corners_to_targets: HashMap<Vector2<isize>, Vec<Vector2<isize>>,
 }
 
 impl HeuristicHelper {
@@ -166,7 +195,10 @@ impl HeuristicHelper {
                 }
             }
         }
-        return HeuristicHelper { target_locs: target_locs, wall_traps: traps, trap_to_targets: traps_to_targets };
+        let corners = find_corners(s, mgr);
+        return HeuristicHelper { target_locs: target_locs, wall_traps: traps,
+            trap_to_targets: traps_to_targets,
+            corners: corners };
     }
 }
 
@@ -197,6 +229,8 @@ pub fn find_box_adj(s: &SokoState<MapTile, Entity>, helper: &HeuristicHelper) ->
         for (trap, targets) in &helper.trap_to_targets {
             // block j is in the trap and can only be assigned to one of that trap's targets
             if in_trap(block, trap) {
+                //println!("{}, {:?}", block, trap);
+                //println!("{}, {}", block.x, block.y);
                 n_traps += 1;
                 for (i, target) in (&helper.target_locs).into_iter().enumerate() {
                     if targets.contains(target) {
@@ -232,6 +266,23 @@ pub fn find_box_adj(s: &SokoState<MapTile, Entity>, helper: &HeuristicHelper) ->
             }
             _ => { panic!("Block somehow in more than 2 traps!"); }
         }
+        // Not all corners are made from wall traps
+        // This handles other corners
+        for corner in &helper.corners {
+            if block == corner {
+                for (i, target) in (&helper.target_locs).into_iter().enumerate() {
+                    if target == corner {
+                        // distance_matrix[(i, j)] Should be 0 at this point
+                        sum -= distance_matrix[(i, j)];
+                        distance_matrix[(i, j)] = 0;
+                    // Other targets are unreachable
+                    } else {
+                        sum -= distance_matrix[(i, j)];
+                        distance_matrix[(i, j)] = BIG_NUMBER;
+                    }
+                }
+            }
+        }
     }
     //println!("{:?}", block_locs);
     //println!("{:?}", helper.target_locs);
@@ -259,6 +310,7 @@ pub fn matching_heuristic(s: &SokoState<MapTile, Entity>, helper: &HeuristicHelp
 }
 
 
+//TODO: player position near a box heuristic for ordering
 pub fn matching_heuristic_inv(s: &SokoState<MapTile, Entity>, helper: &HeuristicHelper) -> OrderedFloat<f64> {
     let mut victory = OrderedFloat(0.0);
     if s.is_win() {

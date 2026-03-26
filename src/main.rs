@@ -4,6 +4,7 @@ use text_io::read;
 use std::time::Instant;
 use rand::prelude::*;
 use rand::rngs::SmallRng;
+use ordered_float::OrderedFloat;
 
 use crate::sokoengine::{Stringable, SokoInterface};
 use crate::heuristics::{find_wall_traps};
@@ -39,7 +40,51 @@ fn char_to_command(c: Option<&u8>) -> Command {
         }
 }
 
-fn game_loop() -> () {
+fn game_loop_basic() -> () {
+    let manager = sokoengine::SokoManager::new(sokoengine::mk_type_to_text);
+    //let contents = fs::read_to_string("./src/sokoban_1_t.lvl").expect("Couldn't read the file!");
+    let contents = fs::read_to_string("./src/sokoban_mid.lvl").expect("Couldn't read the file!");
+    // Create the memory object that holds all the states
+    let mut s_mem: sokoengine::SokoMemory<sokoengine::MapTile, sokoengine::Entity, sokoengine::SokoManager<sokoengine::MapTile, sokoengine::Entity>>
+        = sokoengine::SokoMemory::from_str(&contents, &manager);
+    let helper = heuristics::HeuristicHelper::new(&s_mem.current_state, &manager);
+    println!("LEVEL: \n{}", s_mem.to_str(&manager));
+    loop {
+        // Print the heuristic value
+        let h = heuristics::matching_heuristic(&s_mem.current_state, &helper);
+        let h2 = heuristics::matching_heuristic_inv(&s_mem.current_state, &helper);
+        println!("Heuristic: {} -> {}", h, h2);
+        // Get the text input
+        let i: String = read!();
+        let c: Option<&u8> = i.as_bytes().get(0);
+        //println!("{:?}", c);
+        let command = char_to_command(c);
+        match command {
+            Command::Quit => {
+                    println!("YOU QUIT");
+                    break;
+                }
+            Command::Direction { d: direction} => {
+                println!("{:?}", direction);
+                s_mem.update(direction, &manager);
+            }
+            Command::Undo => {
+                s_mem.undo();
+            }
+            Command::Nothing => {}
+        }
+        //println!("{}", (*s_box).to_str(&manager));
+        println!("{}", s_mem.to_str(&manager));
+        if s_mem.is_win() {
+            println!("YOU WIN!");
+            break;
+        }
+    }
+
+
+}
+
+fn game_loop_set() -> () {
     let submanager: sokoengine::SokoManager<sokoset::MapSet, sokoset::EntitySet> =
         sokoengine::SokoManager::new(sokoset::mk_set_to_text);
     let patterns = sokoset::Patterns::new();
@@ -81,9 +126,7 @@ fn game_loop() -> () {
             break;
         }
     }
-
 }
-
 
 fn main() {
     let manager: sokoengine::SokoManager<sokoengine::MapTile, sokoengine::Entity>
@@ -95,7 +138,8 @@ fn main() {
     let manager = sokoset::SetManager::new(submanager, patterns);
     */
     //let contents = fs::read_to_string("./src/sokoban_1_t.lvl").expect("Couldn't read the file!");
-    let contents = fs::read_to_string("./src/sokoban_simple.lvl").expect("Couldn't read the file!");
+    let contents = fs::read_to_string("./src/sokoban_mid.lvl").expect("Couldn't read the file!");
+    //let contents = fs::read_to_string("./src/sokoban_simple.lvl").expect("Couldn't read the file!");
     let s_init = sokoengine::SokoState::from_str(&contents, &manager);
     /*
     // Heuristic testing!
@@ -107,17 +151,38 @@ fn main() {
     */
     let helper = heuristics::HeuristicHelper::new(&s_init, &manager);
     let mut rng = SmallRng::seed_from_u64(SEED_VALUE);
-    let mut s_tree = mcts::SearchTree::new(s_init.clone());
+    let s_init_tagged = (s_init.clone(), 0);
+    let mut s_tree = mcts::SearchTree::new(s_init_tagged);
+    /*
     let win = s_tree.mcts(Some(50),
-        |s| { heuristics::matching_heuristic_inv(s, &helper) },
+        |s| { heuristics::matching_heuristic_inv(&s.0, &helper) },
         Some(1000),
+        &manager,
+        &mut rng);
+    */
+    let heuristic = |s: &mcts::TaggedSokoState| -> OrderedFloat<f64> { heuristics::matching_heuristic_inv(&s.0, &helper) };
+    let win = s_tree.mcts(Some(50),
+        heuristic,
+        //Some(10000),
+        Some(10000),
         &manager,
         &mut rng);
     //let rolled_out = s_tree.rollout(&s_init, Some(100), &mut rng, &manager);
     //println!("{}", rolled_out.to_str(&manager));
     match win {
-        Some(w) => { println!("{}", w.to_str(&manager)) },
-        None => {}
+        Some(w) => { println!("WON:\n{}", w.to_str(&manager)) },
+        None => {
+            let best = s_tree.best_so_far();
+            match best {
+                Some(b) => { println!("BEST:\n{}", b.to_str(&manager)) }
+                None => {}
+            }
+            let best_h = s_tree.best_heuristic_so_far(heuristic);
+            match best_h {
+                Some(b) => { println!("BEST_H:\n{}", b.to_str(&manager)) }
+                None => {}
+            }
+        }
     }
     /*
     // BFS testing!
@@ -134,8 +199,11 @@ fn main() {
     */
 }
 
+
 /*
 fn main() {
-    game_loop()
+    //game_loop_set();
+    game_loop_basic();
 }
 */
+
