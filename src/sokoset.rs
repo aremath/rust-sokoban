@@ -2,12 +2,14 @@
 // Includes rules for interacting with the set representation, and bitsets for representing sets of designs
 // Compatible with the same string representation as sokoengine.rs
 extern crate nalgebra as na;
+use rand::prelude::*;
+use rand::rngs::SmallRng;
 use na::Vector2;
 use bimap::BiMap;
 use ndarray::{Array, Ix2};
-use std::hash::{DefaultHasher, Hash, Hasher};
 
 use crate::sokoengine;
+use crate::sokoengine::{MapTile, Entity, Direction, SokoInterface, SokoState};
 
 const NUM_PATTERNS: usize = 2;
 
@@ -26,6 +28,26 @@ const ENTITY_BLANK: EntitySet = 1;
 const ENTITY_BLOCK: EntitySet = 2;
 const ENTITY_PLAYER: EntitySet = 4;
 const ENTITY_ANY: EntitySet = 7;
+const ENTITY_NOPLAYER: EntitySet = 3;
+
+fn set_to_tile(m: MapSet) -> Option<MapTile> {
+    match m {
+        MAP_BLANK => { Some(MapTile::Blank) },
+        MAP_WALL => { Some(MapTile::Wall) },
+        MAP_TARGET => { Some(MapTile::Target) },
+        // Anything else is a non-singleton set (or invalid)
+        _ => { None }
+    }
+}
+
+fn set_to_entity(e: EntitySet) -> Option<Entity> {
+    match e {
+        ENTITY_BLANK => { Some(Entity::Blank) },
+        ENTITY_BLOCK => { Some(Entity::Block) },
+        ENTITY_PLAYER => { Some(Entity::Player) },
+        _ => { None }
+    }
+}
 
 impl sokoengine::IsPlayer for EntitySet {
     fn is_player(&self) -> bool {
@@ -76,7 +98,7 @@ impl sokoengine::Coder<MapSet, EntitySet> for SetManager {
 
 impl sokoengine::HasVecs for SetManager {
 
-    fn d_to_v(&self, d: sokoengine::Direction) -> &Vector2<isize> {
+    fn d_to_v(&self, d: Direction) -> &Vector2<isize> {
         return self.m.d_to_v(d);
     }
 
@@ -88,50 +110,50 @@ pub struct PatternEntry {
     post: (MapSet, EntitySet)  // Things that happen as a result of applying the pattern (0 if nothing)
 }
 
-pub struct Patterns {
-    basic_move: [PatternEntry; 2],
-    basic_push: [PatternEntry; 3],
+type Pattern = Vec<PatternEntry>;
+type Patterns = Vec<Pattern>;
+
+pub fn basic_patterns() -> Patterns {
+    let basic_move_a = PatternEntry { cond: (MAP_NOWALL, ENTITY_PLAYER), post: (0, ENTITY_BLANK) };
+    let basic_move_b = PatternEntry { cond: (MAP_NOWALL, ENTITY_BLANK), post: (0, ENTITY_PLAYER) };
+    let basic_move = vec![basic_move_a, basic_move_b];
+    //
+    let basic_push_a = PatternEntry { cond: (MAP_NOWALL, ENTITY_PLAYER), post: (0, ENTITY_BLANK) };
+    let basic_push_b = PatternEntry { cond: (MAP_NOWALL, ENTITY_BLOCK), post: (0, ENTITY_PLAYER) };
+    let basic_push_c = PatternEntry { cond: (MAP_NOWALL, ENTITY_BLANK), post: (0, ENTITY_BLOCK) };
+    let basic_push = vec![basic_push_a, basic_push_b, basic_push_c];
+    return vec![basic_move, basic_push];
 }
 
-/*
-TODO: v how to do this? v
-impl IntoIterator for Patterns {
-    type Item = &[PatternEntry];
-    type IntoIter = std::vec::IntoIter<Self::Item>;
-
-    fn into_iter(&self) -> Self::IntoIter {
-        let v = vec![&self.basic_move, &self.basic_push];
-        return v.iter();
-    }
-}
-*/
-
-impl Patterns {
-
-   pub fn new() -> Self {
-        let basic_move_a = PatternEntry { cond: (MAP_NOWALL, ENTITY_PLAYER), post: (0, ENTITY_BLANK) };
-        let basic_move_b = PatternEntry { cond: (MAP_NOWALL, ENTITY_BLANK), post: (0, ENTITY_PLAYER) };
-        let basic_move = [basic_move_a, basic_move_b];
-        //
-        let basic_push_a = PatternEntry { cond: (MAP_NOWALL, ENTITY_PLAYER), post: (0, ENTITY_BLANK) };
-        let basic_push_b = PatternEntry { cond: (MAP_NOWALL, ENTITY_BLOCK), post: (0, ENTITY_PLAYER) };
-        let basic_push_c = PatternEntry { cond: (MAP_NOWALL, ENTITY_BLANK), post: (0, ENTITY_BLOCK) };
-        let basic_push = [basic_push_a, basic_push_b, basic_push_c];
-        return Patterns { 
-            basic_move: basic_move,
-            basic_push: basic_push,
-        };
-    }
-
+pub fn gen_patterns() -> Patterns {
+    let b_patterns = basic_patterns();
+    // Movement blocked by a wall
+    let move_blocked_a = PatternEntry { cond: (MAP_NOWALL, ENTITY_PLAYER), post: (0, ENTITY_PLAYER) };
+    let move_blocked_b = PatternEntry { cond: (MAP_WALL, ENTITY_BLANK), post: (0, ENTITY_BLANK) };
+    let move_blocked = vec![move_blocked_a, move_blocked_b];
+    // Block push blocked by a wall
+    let push_blocked_a = PatternEntry { cond: (MAP_NOWALL, ENTITY_PLAYER), post: (0, ENTITY_PLAYER) };
+    let push_blocked_b = PatternEntry { cond: (MAP_NOWALL, ENTITY_BLOCK), post: (0, ENTITY_BLOCK) };
+    let push_blocked_c = PatternEntry { cond: (MAP_WALL, ENTITY_BLANK), post: (0, ENTITY_BLANK) };
+    let push_blocked = vec![push_blocked_a, push_blocked_b, push_blocked_c];
+    // Block push blocked by another block
+    let push_blocked_block_a = PatternEntry { cond: (MAP_NOWALL, ENTITY_PLAYER), post: (0, ENTITY_PLAYER) };
+    let push_blocked_block_b = PatternEntry { cond: (MAP_NOWALL, ENTITY_BLOCK), post: (0, ENTITY_BLOCK) };
+    let push_blocked_block_c = PatternEntry { cond: (MAP_NOWALL, ENTITY_BLOCK), post: (0, ENTITY_BLOCK) };
+    let push_blocked_block = vec![push_blocked_block_a, push_blocked_block_b, push_blocked_block_c];
+    let mut patterns = Vec::new();
+    patterns.extend(b_patterns);
+    patterns.extend(vec![move_blocked, push_blocked, push_blocked_block]);
+    return patterns;
 }
 
-type SokoSet = sokoengine::SokoState<MapSet, EntitySet>;
+pub type SokoSet = SokoState<MapSet, EntitySet>;
 
 impl SokoSet {
     
     // Updates self with the given pattern, returning whether the pattern succeeded
     // This allows multiple patterns to be applied without a clone()
-    fn mut_pattern_at<V: sokoengine::HasVecs>(&mut self, c: &Vector2<isize>, d: sokoengine::Direction,
+    fn mut_pattern_at<V: sokoengine::HasVecs>(&mut self, c: &Vector2<isize>, d: Direction,
         pattern: &[PatternEntry], mgr: &V) -> bool {
         let mut current_pos = c.clone();
         let dv = mgr.d_to_v(d);
@@ -140,7 +162,7 @@ impl SokoSet {
             let m = self.get_tile(&current_pos);
             let e = self.get_entity(&current_pos);
             // The rule fails if either possibility set is empty
-            if ((m & p.cond.0) == 0 || (e & p.cond.1) == 0) {
+            if (m & p.cond.0) == 0 || (e & p.cond.1) == 0 {
                 return false;
             }
             current_pos = current_pos + dv;
@@ -167,7 +189,7 @@ impl SokoSet {
     }
 
     // Try to apply a pattern at a specific location. Other functions will determine where to apply them
-    fn apply_pattern_at<V: sokoengine::HasVecs>(&self, c: &Vector2<isize>, d: sokoengine::Direction,
+    fn apply_pattern_at<V: sokoengine::HasVecs>(&self, c: &Vector2<isize>, d: Direction,
         pattern: &[PatternEntry], mgr: &V) -> Option<SokoSet> {
         let mut new_state = self.clone();
         let mut current_pos = c.clone();
@@ -176,7 +198,7 @@ impl SokoSet {
         for p in pattern {
             let m = self.get_tile(&current_pos);
             let e = self.get_entity(&current_pos);
-            if ((m & p.cond.0) == 0 || (e & p.cond.1) == 0) {
+            if (m & p.cond.0) == 0 || (e & p.cond.1) == 0 {
                 return None;
             }
             current_pos = current_pos + dv;
@@ -202,8 +224,8 @@ impl SokoSet {
     }
 
     //TODO: do I need a version of this that applies multiple patterns mutably?
-    fn apply_at_plocs<V: sokoengine::HasVecs>(&self, d: sokoengine::Direction,
-        patterns: &[&[PatternEntry]], mgr: &V) -> Option<SokoSet> {
+    fn apply_at_plocs<V: sokoengine::HasVecs>(&self, d: Direction,
+        patterns: &Patterns, mgr: &V) -> Option<SokoSet> {
         //println!("OLD {:?}", self.player_locs);
         let ordering = sokoengine::choose_ordering(d);
         let dv = mgr.d_to_v(d);
@@ -243,17 +265,70 @@ impl SokoSet {
             return None;
         }
     }
+
+    // Resolve a SokoSet to a singleton SokoState
+    // Returns None if the SokoSet is not singleton
+    pub fn resolve_singleton(&self) -> Option<SokoState<MapTile, Entity>> {
+        let shape = self.map_layer.shape();
+        let height = shape[0];
+        let width = shape[1];
+        let mut locs = Vec::<Vector2<isize>>::new();
+        let mut tiles = Array::<MapTile, Ix2>::default((height, width));
+        let mut entities = Array::<Entity, Ix2>::default((height, width));
+        for (i, _) in self.map_layer.indexed_iter() {
+            let v = Vector2::new(i.0 as isize, i.1 as isize);
+            let t_set = self.get_tile(&v);
+            let o_m = set_to_tile(t_set);
+            match o_m {
+                Some(m) => { tiles[i] = m; },
+                None => { return None; }
+            }
+            let e_set = self.get_entity(&v);
+            let o_e = set_to_entity(e_set);
+            match o_e {
+                Some(e) => { entities[i] = e;
+                    if e == Entity::Player {
+                        locs.push(v);
+                    }
+                },
+                None => { return None; }
+            }
+        }
+        return Some(SokoState { map_layer: tiles, entity_layer: entities, player_locs: locs });
+    }
+
+    fn resolve_randomly(&self, rng: &mut SmallRng) -> SokoSet {
+        let tile_matches = vec![MAP_BLANK, MAP_WALL, MAP_TARGET];
+        let entity_matches = vec![ENTITY_BLANK, ENTITY_BLOCK, ENTITY_PLAYER];
+        let shape = self.map_layer.shape();
+        let height = shape[0];
+        let width = shape[1];
+        let mut locs = Vec::<Vector2<isize>>::new();
+        let mut tiles = Array::<MapSet, Ix2>::default((height, width));
+        let mut entities = Array::<EntitySet, Ix2>::default((height, width));
+        for (i, _) in self.map_layer.indexed_iter() {
+            let v = Vector2::new(i.0 as isize, i.1 as isize);
+            let t_set = self.get_tile(&v);
+            let t_matches: Vec<MapSet> = tile_matches.clone().into_iter().filter(|x| (x & t_set) != 0).collect();
+            let t_match = t_matches.choose(rng).expect("No matches!");
+            tiles[i] = *t_match;
+            let e_set = self.get_entity(&v);
+            let e_matches: Vec<EntitySet> = entity_matches.clone().into_iter().filter(|x| (x & e_set) != 0).collect();
+            let e_match = e_matches.choose(rng).expect("No matches!");
+            entities[i] = *e_match;
+            if *e_match == ENTITY_PLAYER {
+                locs.push(v);
+            }
+        }
+        return SokoSet { map_layer: tiles, entity_layer: entities, player_locs: locs };
+    }
 }
 
-impl sokoengine::SokoInterface<MapSet, EntitySet> for SokoSet {
+impl SokoInterface<MapSet, EntitySet> for SokoSet {
     type V = SetManager;
 
-    fn update(&self, d: sokoengine::Direction, mgr: &SetManager) -> Option<Self> {
-        // Create slices for each applicable pattern
-        let pa: &[PatternEntry] = &mgr.patterns.basic_move;
-        let pb: &[PatternEntry] = &mgr.patterns.basic_push;
-        let patterns: &[&[PatternEntry]] = &[pa, pb];
-        return self.apply_at_plocs(d, patterns, mgr);
+    fn update(&self, d: Direction, mgr: &SetManager) -> Option<Self> {
+        return self.apply_at_plocs(d, &mgr.patterns, mgr);
     }
 
     //TODO: could consider some definitions of victory such as:

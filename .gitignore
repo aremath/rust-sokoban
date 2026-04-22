@@ -20,3 +20,6 @@ target
 src/festival_3.1C
 solutions.sok
 times.txt
+
+.ipynb_checkpoints
+output

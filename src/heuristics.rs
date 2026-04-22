@@ -208,8 +208,12 @@ fn manhattan(v1: &Vector2<isize>, v2: &Vector2<isize>) -> isize {
     return (v1.x - v2.x).abs() + (v1.y - v2.y).abs();
 }
 
-//TODO: since target_locs will not change either, could precompute this and pass in!
-pub fn find_box_adj(s: &SokoState<MapTile, Entity>, helper: &HeuristicHelper) -> Matrix<isize> {
+// Find the block adjacency matrix, which associates targets to possible blocks
+// Trapped blocks can only be associated with targets inside their respective traps
+// Also does a bunch of other stuff, as finding the block locs and iterating them is done once
+pub fn find_box_adj(s: &SokoState<MapTile, Entity>, helper: &HeuristicHelper) -> (Matrix<isize>, isize, Option<isize>) {
+    let player_loc = &s.player_locs[0]; // This assumes both that there IS a player_loc,
+    // And that there's not more than one player
     let mut block_locs = Vec::new();
     for ((y, x), _) in s.map_layer.indexed_iter() {
         let iv = Vector2::new(y as isize, x as isize);
@@ -219,12 +223,38 @@ pub fn find_box_adj(s: &SokoState<MapTile, Entity>, helper: &HeuristicHelper) ->
     }
     // Compute the distance table
     let mut distance_matrix = Matrix::new(helper.target_locs.len(), block_locs.len(), 0);
+    let mut n_satisfied = 0;
+    let mut player_to_box = None;
     let mut sum = 0;
     // Now that we have the locs, find out which targets they belong to
     // Each block is in at most two traps
     // If a block is in two traps, that means it's in their shared corner, and can't be moved at all
     // Therefore can only occupy a target that it's on
     for (j, block) in (&block_locs).into_iter().enumerate() {
+        let mut block_on = false;
+        // Count the number of boxes that are actually ON targets
+        //TODO: fractional? I don't think it makes sense to dilute the heuristic for longer levels though...
+        for target in &helper.target_locs {
+            if block == target {
+                n_satisfied += 1;
+                block_on = true;
+            }
+        }
+        // Compute the distance from the player to all non-satisfied blocks
+        if !block_on {
+            match player_to_box {
+                Some(m) => {
+                    let d = manhattan(player_loc, block);
+                    if d < m {
+                        player_to_box = Some(d);
+                    }
+                }
+                None => {
+                    player_to_box = Some(manhattan(player_loc, block));
+                }
+            }
+        }
+        // Compute all the target stuff
         let mut n_traps = 0;
         for (trap, targets) in &helper.trap_to_targets {
             // block j is in the trap and can only be assigned to one of that trap's targets
@@ -288,16 +318,18 @@ pub fn find_box_adj(s: &SokoState<MapTile, Entity>, helper: &HeuristicHelper) ->
     //println!("{:?}", helper.target_locs);
     //println!("{:?}", distance_matrix);
     assert!(sum < BIG_NUMBER, "Distances are too large!");
-    return distance_matrix;
+    return (distance_matrix, n_satisfied, player_to_box);
 }
 
+/*
 pub fn simple_heuristic(s: &SokoState<MapTile, Entity>) -> OrderedFloat<f64> {
     return OrderedFloat(0.0); //TODO
 }
+*/
 
 //TODO: Some combination of total box distance and median box distance?
 pub fn matching_heuristic(s: &SokoState<MapTile, Entity>, helper: &HeuristicHelper) -> OrderedFloat<f64> {
-    let m = find_box_adj(s, helper);
+    let (m, _, _) = find_box_adj(s, helper);
     let (c, _) = kuhn_munkres_min(&m);
     // This means that a block was matched with an infeasible target
     // In turn, that means there is a target with no feasible blocks
@@ -306,9 +338,35 @@ pub fn matching_heuristic(s: &SokoState<MapTile, Entity>, helper: &HeuristicHelp
         return OrderedFloat(f64::INFINITY);
     }
     return OrderedFloat(c as f64);
-    //return OrderedFloat(0.0); //TODO
 }
 
+// Matching heuristic, but you get bonus points for having boxes on targets, winning, and being near boxes
+pub fn matching_heuristic_with_extras(s: &SokoState<MapTile, Entity>, helper: &HeuristicHelper) -> OrderedFloat<f64> {
+    let (matrix, n_sat, p) = find_box_adj(s, helper);
+    let (matching, _) = kuhn_munkres_min(&matrix);
+    // You get nothing if the matching is impossible
+    if matching >= BIG_NUMBER {
+        return OrderedFloat(0.0);
+    }
+    let player_d = match p {
+        Some(d) => { d }
+        // There are no unmatched blocks
+        // Usually, this means victory, but I won't assign a penalty in this case
+        None => { 0 }
+    };
+    let mut victory = OrderedFloat(0.0);
+    if s.is_win() {
+        victory = OrderedFloat(100.0);
+    }
+    let n_targets = helper.target_locs.len() as isize;
+    let n_unsat = n_targets - n_sat;
+    let box_penalty = OrderedFloat(n_unsat as f64) * OrderedFloat(10.0);
+    // The player going towards an unsatisfied block is 1/3 as important as actually making progress on the blocks
+    //TODO: this gets weird if the player pushes a block onto a target and the next one is very far away
+    //ALSO: the player may have to still push a matched block
+    let player_penalty = OrderedFloat(player_d as f64 / 3.0);
+    return (OrderedFloat(1.0) + victory) / (OrderedFloat(matching as f64) + box_penalty + player_penalty + 0.01);
+}
 
 //TODO: player position near a box heuristic for ordering
 pub fn matching_heuristic_inv(s: &SokoState<MapTile, Entity>, helper: &HeuristicHelper) -> OrderedFloat<f64> {
@@ -321,5 +379,5 @@ pub fn matching_heuristic_inv(s: &SokoState<MapTile, Entity>, helper: &Heuristic
     // Use 1 / x + 0.01 so that if matching_heuristic == 0 (for example, if the game is won), the value isn't infty
     // This means max value is 100.0
     // This is arbitrary
-    return (OrderedFloat(1.0) / (matching_heuristic(s, helper) + 0.01)) + victory;
+    return (OrderedFloat(1.0) + victory) / (matching_heuristic(s, helper) + 0.01);
 }

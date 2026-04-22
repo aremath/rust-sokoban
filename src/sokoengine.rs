@@ -1,17 +1,14 @@
 // Basic Sokoban Engine
 // Includes string input / output for sokoban levels, movement model for sokoban, etc.
 // Also includes a memory type for implementing undo operations
-use std::fmt;
-use std::isize::MAX;
-use ndarray::{Array, Axis, Ix2};
+use ndarray::{Array, Ix2};
 use bimap::BiMap;
-use std::hash::{DefaultHasher, Hash, Hasher};
+use std::hash::{Hash, Hasher};
 extern crate approx;
 extern crate nalgebra as na;
 use na::Vector2;
 use std::collections::VecDeque;
 use std::marker::PhantomData;
-use strum::IntoEnumIterator;
 use strum_macros::EnumIter;
 
 const MAX_MEMORY: usize = 100;
@@ -79,7 +76,7 @@ pub trait HasVecs {
 }
 
 // Trait for a way to check whether a thing counts as a player location
-// Necessary for from_str to be polymorphic
+// Necessary for from_str to be polymorphic, because the player_locs list needs to be instantiated from the string
 pub trait IsPlayer {
     fn is_player(&self) -> bool;
 }
@@ -218,6 +215,14 @@ pub trait SokoInterface<M, E> {
 }
 
 impl<M: Default + Clone, E: Default + Clone> SokoState<M, E> {
+
+    pub fn get_tile_maybe(&self, c: &Vector2<isize>) -> Option<M> {
+        return index_checked(&self.map_layer, c);
+    }
+
+    pub fn get_entity_maybe(&self, c: &Vector2<isize>) -> Option<E> {
+        return index_checked(&self.entity_layer, c);
+    }
     
     pub fn get_tile(&self, c: &Vector2<isize>) -> M {
         match index_checked(&self.map_layer, c) {
