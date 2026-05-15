@@ -17,6 +17,8 @@ use std::time::Instant;
 use rand::prelude::*;
 use rand::rngs::SmallRng;
 use std::f64::consts::E as eulers_constant;
+// For bounding the memory usage
+//use memory_stats::memory_stats
 
 use crate::sokoengine::{SokoManager, SokoState, HasVecs, MapTile, Entity, Direction, SokoInterface, Stringable, Coder, IsPlayer};
 use crate::sokoset::{SokoSet, SetManager};
@@ -25,6 +27,14 @@ use crate::sokoset::{SokoSet, SetManager};
 pub enum SelectPolicy {
     EpsilonGreedy,
     Softmax,
+}
+
+
+//TODO: some kind of mixture -- can have "forget" that remembers the first k nodes of the path, for example
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub enum RolloutMode {
+    Forget,
+    Remember
 }
 
 //TODO: move more stuff into SearchSettings
@@ -46,9 +56,11 @@ pub struct SearchSettings {
     // Scale factor for the "inherent" value of a state (the heuristic value for the state itself)
     inherent_value_scale: OrderedFloat<f64>,
     select_policy : SelectPolicy,
+    rollout_mode : RolloutMode,
     rollout_length: Option<usize>,
     n_rollouts_per_leaf: usize,
     gamma: OrderedFloat<f64>,
+    //max_memory: Option<usize>, //TODO: implement this!
 }
 
 impl SearchSettings {
@@ -59,18 +71,23 @@ impl SearchSettings {
         epsilon: OrderedFloat<f64>,
         inherent_value_scale: OrderedFloat<f64>,
         selection_policy: SelectPolicy,
+        rollout_mode: RolloutMode,
         rollout_length: Option<usize>,
         n_rollouts_per_leaf: usize,
-        gamma: OrderedFloat<f64>) -> Self {
+        gamma: OrderedFloat<f64>,
+        //max_memory: Option<usize>
+        ) -> Self {
             return SearchSettings { exploration_bonus : exploration_bonus,
                 exploitation_scale : exploitation_scale,
                 maximization_bias : maximization_bias,
                 epsilon : epsilon,
                 inherent_value_scale : inherent_value_scale,
                 select_policy : selection_policy,
+                rollout_mode : rollout_mode,
                 rollout_length : rollout_length,
                 n_rollouts_per_leaf : n_rollouts_per_leaf,
                 gamma : gamma,
+                //max_memory: max_memory,
             };
         }
 
@@ -116,31 +133,6 @@ impl Searchable for SokoState<MapTile, Entity> {
     }
 }
 
-impl Searchable for SokoSet {
-    type V = SetManager;
-    type A = Direction;
-
-    fn neighbors(&self, mgr: &SetManager) -> Vec<(Self::A, SokoSet)> {
-        let v = Vec::new();
-        return v; //TODO
-    }
-
-    fn terminal(&self) -> bool {
-        match self.resolve_singleton() {
-            Some(_) => { true },
-            None => { false }
-        }
-    }
-
-    // TODO: you can't "win" an in-progress design (?)
-    fn is_win(&self) -> bool {
-        match self.resolve_singleton() {
-            Some(s) => { SokoInterface::is_win(&s) },
-            None => { false }
-        }
-    }
-}
-
 // "time" tags enforce DAGness of the state graph
 pub type Tagged<T> = (T, usize);
 pub type TaggedSokoState<M, E> = Tagged<SokoState<M, E>>;
@@ -168,7 +160,7 @@ impl<T> Searchable for Tagged<T> where
     }
 }
 
-impl<M: Eq + Hash + Copy + Default, E: Eq + Hash + Copy + Default + IsPlayer, C: Coder<M, E>> Stringable<M, E, C> for TaggedSokoState<M, E> {
+impl<M: Eq + Hash + Copy + Default, E: Eq + Hash + Copy + Default + IsPlayer, C: Coder<M, E>> Stringable<C> for TaggedSokoState<M, E> {
     fn from_str(s: &String, mgr: &C) -> Self {
         return (SokoState::<M, E>::from_str(s, mgr), 0);
     }
@@ -217,6 +209,7 @@ impl<T: Clone + Eq + PartialEq> PartialOrd for SearchState<T> {
     }
 }
 
+//TODO: add a "terminals" vector to hold the set of terminals encountered so far
 pub struct SearchTree<T: Clone + Eq + PartialEq + Hash + Searchable> {
     pub initial_state: T,
     pub t: usize,
@@ -229,10 +222,11 @@ pub struct SearchTree<T: Clone + Eq + PartialEq + Hash + Searchable> {
     children: Box<HashMap<T, Vec<T>>>,
     state_data: Box<HashMap<T, StateData>>,
     state_queue: Box<BinaryHeap<SearchState<T>>>,
+    pub archive: Vec<(T, OrderedFloat<f64>)>,
 }
 
 impl<T: Clone + Eq + PartialEq + Hash + Searchable> SearchTree<T> where
-    T: Stringable<MapTile, Entity, <T as Searchable>::V>
+    T: Stringable<<T as Searchable>::V>
 {
 
     pub fn new(initial_state: T, settings: SearchSettings) -> Self {
@@ -256,7 +250,8 @@ impl<T: Clone + Eq + PartialEq + Hash + Searchable> SearchTree<T> where
             single_parents: Box::new(h),
             children: Box::new(c),
             state_data: Box::new(d),
-            state_queue : Box::new(p) };
+            state_queue : Box::new(p),
+            archive : Vec::new() };
     }
 
 
@@ -689,6 +684,9 @@ impl<T: Clone + Eq + PartialEq + Hash + Searchable> SearchTree<T> where
     //TODO: why not just select a node rather than selecting by traversing the tree?
     // If you keep a global queue of the states, then MCTS is guaranteed to eventually find a path if one exists
     //TODO: use until() instead of Searchable::is_win()?
+    //TODO: move max_states, max_iters, etc. into SearchSettings
+    //TODO: change SearchSettings as an argument to MCTS rather than an inherent property of the tree
+    // Can concievably run two different searches on the same tree
     pub fn mcts(&mut self, heuristic: impl Fn(&T) -> OrderedFloat<f64>,
         max_states: Option<usize>, max_iters: Option<usize>, min_samples: Option<usize>,
         mgr: &<T as Searchable>::V,
@@ -738,15 +736,27 @@ impl<T: Clone + Eq + PartialEq + Hash + Searchable> SearchTree<T> where
             //self.rollout_backprop(&leaf, rollout_length, mgr, rng, &heuristic);
             //let rolled_out = self.rollout_forget(&leaf, rollout_length, rng, mgr);
             let mut n_rollouts = 0;
-                while n_rollouts < self.settings.n_rollouts_per_leaf {
+            while n_rollouts < self.settings.n_rollouts_per_leaf {
                 n_rollouts += 1;
-                let (rolled_out, trajectory2, depth) = self.rollout(&leaf, self.settings.rollout_length, rng, &heuristic, mgr);
+                let (rolled_out, trajectory2, depth) = match self.settings.rollout_mode {
+                    RolloutMode::Remember => { self.rollout(&leaf, self.settings.rollout_length, rng, &heuristic, mgr) },
+                    RolloutMode::Forget => { self.rollout_forget(&leaf, self.settings.rollout_length, rng, mgr) }
+                };
+                //TODO: what to do if we won (rolled_out.is_win()) in Forget mode?
+                // Should forget save the trajectory in case we need that?
+                // Should we add those states to the tree??
                 if rolled_out.is_win() {
                     return Some(rolled_out.clone());
                 }
                 //println!("Rolled out to\n{}", rolled_out.to_str(mgr));
                 let h = heuristic(&rolled_out);
+                //TODO: have a archive_threshold in settings...
+                if rolled_out.terminal() && h > OrderedFloat(0.0) {
+                    self.archive.push((rolled_out.clone(), h));
+                }
                 let mut current_gamma = OrderedFloat(1.0);
+                //println!("{}", rolled_out.to_str(mgr));
+                //println!("{}", h);
                 //println!("\tPropagating {}", h);
                 // Step 3, propagate the rollout score up the tree along the trajectory
                 // First, update the value for nodes discovered during the rollout
@@ -754,6 +764,11 @@ impl<T: Clone + Eq + PartialEq + Hash + Searchable> SearchTree<T> where
                 for ancestor2 in trajectory2.iter().rev() {
                     self.update_data(&ancestor2, h * current_gamma);
                     current_gamma = current_gamma * self.settings.gamma;
+                }
+                // If the rollout mode is Forget, trajectory2 is empty, but we still want to discount the reward
+                // based on the length of the rollout
+                if self.settings.rollout_mode == RolloutMode::Forget {
+                    current_gamma = self.settings.gamma.pow(depth as f64);
                 }
                 // Then update ancestors on the path we took to get here
                 for ancestor in trajectory.iter().rev() {
@@ -815,49 +830,57 @@ impl<T: Clone + Eq + PartialEq + Hash + Searchable> SearchTree<T> where
     }
 
     // Returns a reference to the best state found so far
-    pub fn best_so_far(&self) -> Option<&T> {
+    pub fn best_so_far(&self, only_terminals: bool) -> (Option<&T>, OrderedFloat<f64>) {
         let mut best_state = None;
         let mut max_h = OrderedFloat(0.0);
         for state in self.visited.iter() {
-            let d = self.state_data.get(state);
-            match d {
-                Some(data) => {
-                    if data.n_samples > 0 {
-                        //println!("{}", f64::from(data.value_estimate));
-                        let exploitation = self.exploitation_score(data);
-                        if exploitation > max_h {
-                            max_h = exploitation;
-                            best_state = Some(state);
+            if !only_terminals || state.terminal() {
+                let d = self.state_data.get(state);
+                match d {
+                    Some(data) => {
+                        if data.n_samples > 0 {
+                            //println!("{}", f64::from(data.value_estimate));
+                            let exploitation = self.exploitation_score(data);
+                            if exploitation > max_h {
+                                max_h = exploitation;
+                                best_state = Some(state);
+                            }
                         }
-                    }
-                },
-                None => {}
+                    },
+                    None => {}
+                }
             }
         }
-        match best_state {
-            Some(_s) => { println!("{}",
-                f64::from(max_h)) },
-            None => {}
-        }
-        return best_state;
+        return (best_state, max_h);
     }
 
-    pub fn best_heuristic_so_far(&self, heuristic: impl Fn(&T) -> OrderedFloat<f64>) -> Option<&T> {
+    pub fn best_heuristic_so_far(&self, heuristic: impl Fn(&T) -> OrderedFloat<f64>,
+        only_terminals: bool) -> (Option<&T>, OrderedFloat<f64>) {
         let mut best_state = None;
         let mut max_h = OrderedFloat(0.0);
         for state in self.visited.iter() {
-            let h = heuristic(state);
-            if h > max_h {
-                max_h = h;
-                best_state = Some(state);
+            if !only_terminals || state.terminal() {
+                let h = heuristic(state);
+                if h > max_h {
+                    max_h = h;
+                    best_state = Some(state);
+                }
             }
         }
-        match best_state {
-            Some(_s) => { println!("{}",
-                f64::from(max_h)) },
-            None => {}
+        return (best_state, max_h);
+    }
+
+    pub fn best_archived(&self) -> (Option<&T>, OrderedFloat<f64>) {
+        let mut best = None;
+        let mut max_h = OrderedFloat(0.0);
+        for (state, h) in &(self.archive) {
+            let hh = *h;
+            if hh > max_h {
+                best = Some(state);
+                max_h = hh;
+            }
         }
-        return best_state;
+        return (best, max_h);
     }
 
     // BFS

@@ -65,8 +65,8 @@ pub trait Coder<M, E> {
 
 // Trait for a type that can use a manager to read and write state to string
 // This trait is here because the reading / writing code can be generic
-// Stringable depends on C because different implementations of C can provide different resulting strings, even for the same M, E types.
-pub trait Stringable<M, E, C> {
+// Stringable is generic over C because different implementations of C can provide different resulting strings for the same Self.
+pub trait Stringable<C> {
     fn from_str(s: &String, mgr: &C) -> Self;
     fn to_str(&self, mgr: &C) -> String;
 }
@@ -248,7 +248,7 @@ impl<M: Default + Clone, E: Default + Clone> SokoState<M, E> {
     }
 }
 
-impl<M: Eq + Hash + Copy + Default, E: Eq + Hash + Copy + IsPlayer + Default, C: Coder<M, E>> Stringable<M, E, C> for SokoState<M, E> {
+impl<M: Eq + Hash + Copy + Default, E: Eq + Hash + Copy + IsPlayer + Default, C: Coder<M, E>> Stringable<C> for SokoState<M, E> {
 
     fn to_str(&self, mgr: &C) -> String {
         let mut s = "".to_string();
@@ -363,8 +363,8 @@ pub struct SokoMemory<M, E, C> {
     phantom: PhantomData<C>, // Sokomemory doesn't HAVE a manager, but it depends on the type of manager being used
 }
 
-impl<M: Eq + Hash + Copy + Default, E: Eq + Hash + Copy + IsPlayer + Default, C: Coder<M, E>> Stringable<M, E, C> for SokoMemory<M, E, C> where
-    SokoState<M, E>: Stringable<M, E, C>,
+impl<M: Eq + Hash + Copy + Default, E: Eq + Hash + Copy + IsPlayer + Default, C: Coder<M, E>> Stringable<C> for SokoMemory<M, E, C> where
+    SokoState<M, E>: Stringable<C>,
 {
 
     fn to_str(&self, mgr: &C) -> String {
@@ -386,7 +386,7 @@ impl<M: Eq + Hash + Copy + Default, E: Eq + Hash + Copy + IsPlayer + Default, C:
 impl<M: Clone, E: Clone, C: Coder<M, E>> SokoMemory<M, E, C> where 
     //C: <SokoState<M, E> as SokoInterface<M, E>>::V,
     SokoState<M, E>: SokoInterface<M, E>,
-    SokoState<M, E>: Stringable<M, E, C>,
+    SokoState<M, E>: Stringable<C>,
 {
 
     pub fn update(&mut self, d: Direction, mgr: &<SokoState<M, E> as SokoInterface<M, E>>::V) -> () {

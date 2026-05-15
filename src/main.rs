@@ -7,6 +7,7 @@ use ordered_float::OrderedFloat;
 
 use crate::sokoengine::{Stringable, SokoInterface, MapTile, Entity};
 use crate::kartal_baseline::{GenState, eval_state};
+use crate::mcts::{Searchable};
 
 mod sokoengine;
 mod sokoset;
@@ -15,6 +16,8 @@ mod heuristics;
 mod kartal_baseline;
 
 const SEED_VALUE: u64 = 0;
+// IEC can go jump in a lake
+//const GIGA = 1073741824 // bytes
 
 enum Command {
     Quit,
@@ -184,6 +187,7 @@ fn searching() {
         // Selection Policy
         mcts::SelectPolicy::Softmax,
         //mcts::SelectPolicy::EpsilonGreedy,
+        mcts::RolloutMode::Remember,
         // Rollout length
         Some(25),
         // N Rollouts per leaf
@@ -235,14 +239,14 @@ fn searching() {
             }
         },
         None => {
-            let best = s_tree.best_so_far();
+            let (best, best_val) = s_tree.best_so_far(false);
             match best {
-                Some(b) => { println!("BEST:\n{}", b.to_str(&manager)) }
+                Some(b) => { println!("BEST:\n{}\n{}", b.to_str(&manager), best_val) }
                 None => {}
             }
-            let best_h = s_tree.best_heuristic_so_far(heuristic);
+            let (best_h, best_valh) = s_tree.best_heuristic_so_far(heuristic, false);
             match best_h {
-                Some(b) => { println!("BEST_H:\n{}", b.to_str(&manager)) }
+                Some(b) => { println!("BEST_H:\n{}\n{}", b.to_str(&manager), best_valh) }
                 None => {}
             }
         }
@@ -271,9 +275,9 @@ fn kartal() -> () {
         // Exploration Bonus
         OrderedFloat(2.0),
         // Exploitation Scale
-        OrderedFloat(20.0),
+        OrderedFloat(30.0),
         // Maximization Bias
-        OrderedFloat(0.0),
+        OrderedFloat(0.5),
         // Epsilon
         OrderedFloat(0.65),
         // Inherent Value (does not really exist in this setting)
@@ -281,32 +285,51 @@ fn kartal() -> () {
         // Selection Policy
         mcts::SelectPolicy::Softmax,
         //mcts::SelectPolicy::EpsilonGreedy,
+        // Rollout Mode
+        mcts::RolloutMode::Forget,
         // Rollout length
         None,
         // N Rollouts per leaf
         1,
         // Gamma
-        OrderedFloat(0.97),
+        //OrderedFloat(0.97), //TODO: in this setting, gamma incentivizes the creation of short solutions...
+        OrderedFloat(1.0),
     );
     let s_init = GenState::new(5,5);
+    /*
+    let nn = s_init.neighbors(&manager);
+    let (a0, n0) = &nn[0];
+    let nn0 = n0.neighbors(&manager);
+    let (a1, n1) = &nn0[0];
+    println!("{}\n\n\n", n1.to_str(&manager));
+    for (a, n) in n1.neighbors(&manager) {
+        println!("{}", n.to_str(&manager));
+    }
+    */
     let now = Instant::now();
     let heuristic = |s: &GenState| -> OrderedFloat<f64> { eval_state(s) };
     let mut s_tree = mcts::SearchTree::new(s_init, settings);
     let _ = s_tree.mcts(heuristic,
         None,
-        Some(20000),
+        Some(200000),
         None,
         &manager,
         &mut rng);
     println!("{:?}", now.elapsed());
-    let best = s_tree.best_so_far();
+    println!("Found {} puzzles", s_tree.archive.len()); //NOTE: these puzzles may not be distinct :(
+    let (best, best_val) = s_tree.best_so_far(false);
     match best {
-        Some(b) => { println!("BEST:\n{}", b.level_init.to_str(&manager)) }
+        Some(b) => { println!("BEST:\n{}\n{}", b.to_str(&manager), best_val) },
         None => {}
     }
-    let best_h = s_tree.best_heuristic_so_far(heuristic);
+    let (best_h, best_valh) = s_tree.best_heuristic_so_far(heuristic, false);
     match best_h {
-        Some(b) => { println!("BEST_H:\n{}", b.level_init.to_str(&manager)) }
+        Some(b) => { println!("BEST_H:\n{}\n{}", b.to_str(&manager), best_valh) },
+        None => {}
+    }
+    let (best_a, best_ah) = s_tree.best_archived();
+    match best_a {
+        Some(b) => { println!("BEST_A:\n{}\n{}", b.to_str(&manager), best_ah) },
         None => {}
     }
 }

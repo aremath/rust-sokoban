@@ -14,6 +14,9 @@ use std::iter::zip;
 use crate::sokoengine::{SokoState, Direction, MapTile, Entity, SokoManager, HasVecs, Stringable};
 use crate::mcts::{Searchable, TaggedSokoState};
 
+// The maximum length of a proposed solution
+const MAX_DEPTH: usize = 50;
+
 #[derive(Debug, Copy, Clone, Eq, Hash, PartialEq)]
 pub enum GenStage {
     LevelGen,
@@ -47,10 +50,10 @@ pub struct GenState {
 
 impl Eq for GenState {}
 
-impl Stringable<MapTile, Entity, SokoManager<MapTile, Entity>> for GenState {
+impl Stringable<SokoManager<MapTile, Entity>> for GenState {
     
     fn from_str(s: &String, mgr: &SokoManager<MapTile, Entity>) -> Self {
-        let state = <SokoState<MapTile, Entity> as Stringable<MapTile, Entity, SokoManager<MapTile, Entity>>>::from_str(s, mgr);
+        let state = <SokoState<MapTile, Entity> as Stringable<SokoManager<MapTile, Entity>>>::from_str(s, mgr);
         return GenState { stage: GenStage::LevelGen,
             level_init: state,
             level_final: None,
@@ -63,14 +66,13 @@ impl Stringable<MapTile, Entity, SokoManager<MapTile, Entity>> for GenState {
             GenStage::LevelGen => { "level_gen" },
             GenStage::SolGen => { "sol_gen" },
             GenStage::Eval => { "eval" }
-
         };
         //let init_str = SokoState::<MapTile, Entity>::Stringable::to_str(s, mgr);
         let init_str = self.level_init.to_str(mgr);
         match &self.level_final {
             Some(l) => {
                 //final_str = SokoState::<MapTile, Entity>::Stringable::to_str(l, mgr);
-                return format!("{}\n{}\n{}", stage_str, init_str, l.to_str(mgr));
+                return format!("{}\n{}\n\n{}", stage_str, init_str, l.to_str(mgr));
             },
             None => {
                 return format!("{}\n{}", stage_str, init_str);
@@ -244,13 +246,15 @@ impl GenState {
 
     pub fn neighbors_solgen(&self, mgr: &SokoManager<MapTile, Entity>) -> Vec<(GenAction, Self)> {
         let mut neighbors = Vec::new();
-        for (a, n) in self.level_final.as_ref().expect("No final level during solgen!").neighbors(mgr) {
-            let new_mapping = self.update_box_mapping(a, &n.0, mgr);
-            let neighbor = GenState { stage: GenStage::SolGen,
-                level_init: self.level_init.clone(),
-                level_final: Some(n),
-                box_mapping: Some(new_mapping) };
-            neighbors.push((GenAction::MovePlayer, neighbor));
+        if self.level_final.as_ref().expect("No final level during solgen!").1 < MAX_DEPTH {
+            for (a, n) in self.level_final.as_ref().expect("No final level during solgen!").neighbors(mgr) {
+                let new_mapping = self.update_box_mapping(a, &n.0, mgr);
+                let neighbor = GenState { stage: GenStage::SolGen,
+                    level_init: self.level_init.clone(),
+                    level_final: Some(n),
+                    box_mapping: Some(new_mapping) };
+                neighbors.push((GenAction::MovePlayer, neighbor));
+            }
         }
         let eval_level = self.mk_eval(mgr);
         neighbors.push((GenAction::Evaluate, eval_level));
@@ -314,19 +318,36 @@ fn count_boxes(state: &GenState) -> usize {
     return box_mapping.len();
 }
 
+// Counts the number of tiles NOT in a 3x3 of the same tile type
 fn count_three_by_three(state: &SokoState<MapTile, Entity>) -> usize {
-    let mut n_three_by_threes = 0;
+    let mut three_by_threes = Vec::new();
     //TODO: this is obviously a bit inefficient
     for (i, _) in state.map_layer.indexed_iter() {
         let v = Vector2::new(i.0 as isize, i.1 as isize);
         let vv = Vector2::new(i.0 as isize + 3, i.1 as isize + 3);
+        //TODO: I think this should count player and boxes as well
         let (n_walls, _) = count_within(state, v, vv, MapTile::Wall, Entity::Blank);
         let (n_blank, _) = count_within(state, v, vv, MapTile::Blank, Entity::Blank);
-        if n_walls == 9 || n_blank == 9 {
-            n_three_by_threes += 1;
+        if (n_walls == 9 || n_blank == 9) {
+            three_by_threes.push(v);
         }
     }
-    return n_three_by_threes;
+    //println!("{}", three_by_threes.len());
+    let mut n_tbts = 0;
+    for (i, _) in state.map_layer.indexed_iter() {
+        let v = Vector2::new(i.0 as isize, i.1 as isize);
+        let mut in_tbt = false;
+        for t in &three_by_threes {
+            let vv = v-t;
+            if v.x < 3 && v.y < 3 {
+                in_tbt = true;
+            }
+        }
+        if !in_tbt {
+            n_tbts += 1;
+        }
+    }
+    return n_tbts;
 }
 
 fn count_within(state: &SokoState<MapTile, Entity>, rect_start: Vector2<isize>, rect_end: Vector2<isize>,
@@ -379,11 +400,23 @@ fn congestion_v2(state: &GenState) -> OrderedFloat<f64> {
 
 fn eval_end_state(state: &GenState) -> OrderedFloat<f64> {
     let box_count = OrderedFloat(count_boxes(state) as f64);
-    let three_by_three = OrderedFloat(count_three_by_three(&state.level_init) as f64);
+    //TODO: fix this metric!
+    //let three_by_three = OrderedFloat(count_three_by_three(&state.level_init) as f64);
+    let three_by_three = OrderedFloat(0.0);
     let congestion = congestion_v2(state);
     // The value function reported in the paper is (10 * box count + 5 * congestion v2 + 1 * 3x3 Block Count) / 50
     //println!("{}, {}, {}", box_count, three_by_three, congestion);
-    return (OrderedFloat(10.0) * box_count + OrderedFloat(5.0) * congestion + three_by_three) / OrderedFloat(50.0);
+    /*
+    if congestion != OrderedFloat(0.0) {
+        println!("{}, {}, {}", box_count, three_by_three, congestion);
+    }
+    */
+    // I do not understand why w_b = 5.0...
+    // Typical value will be 25 for a 5x5 grid, so this metric would dominate both others
+    // e.g. box count is bounded above by 25, but there will be many fewer boxes in practice
+    return (OrderedFloat(1.0) * box_count +
+        OrderedFloat(10.0) * congestion +
+        OrderedFloat(5.0) * three_by_three) / OrderedFloat(50.0);
 }
 
 pub fn eval_state(state: &GenState) -> OrderedFloat<f64> {
